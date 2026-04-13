@@ -541,18 +541,26 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
 // Local model served alongside the HTML (e.g. /models/whisper-base/).
 // Cloudflare Pages, Vercel and Netlify all serve static files with
 // Access-Control-Allow-Origin: * so same-origin fetches never hit CORS.
-env.allowLocalModels  = true;          // load from local path, never HuggingFace
-env.useBrowserCache   = true;          // cache tensors in IndexedDB across reloads
-env.localModelPath    = './models/';   // base path — model folder is appended to this
+env.allowLocalModels  = true;   // load from local path, never HuggingFace
+env.useBrowserCache   = true;   // cache tensors in IndexedDB across reloads
+
+// IMPORTANT: localModelPath must be './' (NOT './models/').
+// Transformers.js builds the URL as: localModelPath + modelName + '/' + filename
+// So if localModelPath='./models/' and modelName='whisper-base', it becomes:
+//   ./models/whisper-base/config.json  ✓  — but the pipeline call below uses
+//   the full string './models/whisper-base' which would give /models/models/...  ✗
+// Setting localModelPath='./' and modelName='models/whisper-base' gives:
+//   ./models/whisper-base/config.json  ✓  with no double-segment bug.
+env.localModelPath    = './';
 
 // WASM runtime from jsDelivr (CORS-safe, same version as the JS bundle).
 // Model weights come from ./models/* on the same origin — no CORS at all.
 const CDN = 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2/dist/';
 env.backends.onnx.wasm.wasmPaths = CDN;
 
-// Must match the folder name exactly: ./models/whisper-base/
-// Transformers.js resolves this as: {localModelPath}{MODEL_NAME}/
-const MODEL_NAME      = 'whisper-base';
+// 'models/whisper-base' + localModelPath './' = './models/whisper-base/{file}'
+// No double-segment, no HuggingFace fallback.
+const MODEL_NAME      = 'models/whisper-base';
 const SILENCE_THRESH  = 0.012;         // RMS threshold for silence detection
 const SILENCE_DELAY   = 3000;          // ms of silence before auto-stop
 
@@ -700,14 +708,14 @@ function startSilenceDetector() {
 async function loadModel() {
   setStatus('loading', 'Завантаження моделі…');
   try {
-    // Pass the exact local folder path so Transformers.js never touches HuggingFace.
-    // With env.allowLocalModels = true and env.localModelPath = './models/',
-    // a bare name like 'whisper-base' resolves to './models/whisper-base/'.
-    // Passing the full './models/whisper-base/' string makes the resolution
-    // explicit and unambiguous — works identically on Cloudflare Pages.
+    // MODEL_NAME = 'models/whisper-base'
+    // env.localModelPath = './'
+    // → resolved URL: ./models/whisper-base/{filename}
+    // → on Cloudflare Pages: https://your-site.pages.dev/models/whisper-base/{filename}
+    // Same-origin fetch — zero CORS, no HuggingFace involved at any point.
     transcriber = await pipeline(
       'automatic-speech-recognition',
-      './models/whisper-base/',   // exact local path — no HuggingFace fallback
+      MODEL_NAME,
       {
         progress_callback: (p) => {
           if (p.status === 'downloading' || p.status === 'loading') {
@@ -716,8 +724,7 @@ async function loadModel() {
             $overlayPct.textContent  = pct + '%';
           }
         },
-        // Prefer quantized ONNX files that live under /onnx/ in your folder
-        quantized: true,
+        quantized: true,   // loads *_quantized.onnx files under /onnx/
       }
     );
     $overlay.classList.add('hidden');
