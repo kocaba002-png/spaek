@@ -450,13 +450,13 @@
       <div class="overlay-progress-fill" id="overlay-fill"></div>
     </div>
     <div id="overlay-pct">0%</div>
-    <div class="overlay-sub">Завантаження whisper-tiny (~40 МБ).<br>Все обробляється локально на вашому пристрої.</div>
+    <div class="overlay-sub">Завантаження whisper-base з локальних файлів.<br>Жодних зовнішніх запитів — все на вашому пристрої.</div>
   </div>
 
   <header>
     <div class="eyebrow">100% локально · без хмари · дані не покидають пристрій</div>
     <h1>Whisper STT</h1>
-    <p>powered by transformers.js &amp; whisper-tiny</p>
+    <p>powered by transformers.js &amp; whisper-base (local)</p>
   </header>
 
   <div class="card">
@@ -529,7 +529,7 @@
   </div>
 
   <footer>
-    Model: <span>openai/whisper-tiny</span> · Engine: <span>@xenova/transformers</span><br>
+    Model: <span>whisper-base (local /models/)</span> · Engine: <span>@xenova/transformers</span><br>
     All audio processed locally · Zero network calls after model load
   </footer>
 
@@ -538,17 +538,21 @@
 import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2/dist/transformers.min.js';
 
 // ─── Config ───────────────────────────────────────────────────────────────────
-env.allowLocalModels = false;          // Use CDN-hosted model weights
-env.useBrowserCache  = true;           // Cache in IndexedDB across page loads
+// Local model served alongside the HTML (e.g. /models/whisper-base/).
+// Cloudflare Pages, Vercel and Netlify all serve static files with
+// Access-Control-Allow-Origin: * so same-origin fetches never hit CORS.
+env.allowLocalModels  = true;          // load from local path, never HuggingFace
+env.useBrowserCache   = true;          // cache tensors in IndexedDB across reloads
+env.localModelPath    = './models/';   // base path — model folder is appended to this
 
-// ── CORS fix: route WASM runtime through jsDelivr (permissive CORS headers) ──
-// Direct HuggingFace fetches are blocked by CORS in deployed environments
-// (Cloudflare Pages, Vercel, Netlify). jsDelivr proxies the same files with
-// Access-Control-Allow-Origin: * so they work from any origin.
+// WASM runtime from jsDelivr (CORS-safe, same version as the JS bundle).
+// Model weights come from ./models/* on the same origin — no CORS at all.
 const CDN = 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2/dist/';
 env.backends.onnx.wasm.wasmPaths = CDN;
 
-const MODEL_NAME      = 'Xenova/whisper-tiny';
+// Must match the folder name exactly: ./models/whisper-base/
+// Transformers.js resolves this as: {localModelPath}{MODEL_NAME}/
+const MODEL_NAME      = 'whisper-base';
 const SILENCE_THRESH  = 0.012;         // RMS threshold for silence detection
 const SILENCE_DELAY   = 3000;          // ms of silence before auto-stop
 
@@ -696,15 +700,26 @@ function startSilenceDetector() {
 async function loadModel() {
   setStatus('loading', 'Завантаження моделі…');
   try {
-    transcriber = await pipeline('automatic-speech-recognition', MODEL_NAME, {
-      progress_callback: (p) => {
-        if (p.status === 'downloading' || p.status === 'loading') {
-          const pct = p.progress != null ? Math.round(p.progress) : 0;
-          $overlayFill.style.width = pct + '%';
-          $overlayPct.textContent  = pct + '%';
-        }
+    // Pass the exact local folder path so Transformers.js never touches HuggingFace.
+    // With env.allowLocalModels = true and env.localModelPath = './models/',
+    // a bare name like 'whisper-base' resolves to './models/whisper-base/'.
+    // Passing the full './models/whisper-base/' string makes the resolution
+    // explicit and unambiguous — works identically on Cloudflare Pages.
+    transcriber = await pipeline(
+      'automatic-speech-recognition',
+      './models/whisper-base/',   // exact local path — no HuggingFace fallback
+      {
+        progress_callback: (p) => {
+          if (p.status === 'downloading' || p.status === 'loading') {
+            const pct = p.progress != null ? Math.round(p.progress) : 0;
+            $overlayFill.style.width = pct + '%';
+            $overlayPct.textContent  = pct + '%';
+          }
+        },
+        // Prefer quantized ONNX files that live under /onnx/ in your folder
+        quantized: true,
       }
-    });
+    );
     $overlay.classList.add('hidden');
     setStatus('ready', 'Готово');
     $btnStart.disabled = false;
